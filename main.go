@@ -24,7 +24,6 @@ var (
 	activeChatrooms = make(map[string]*Chatroom)
 )
 
-
 type Chatroom struct {
 	Name         string
 	MaxUsers     int
@@ -47,7 +46,6 @@ func main() {
 	}
 	defer host.Close()
 
-
 	fmt.Print("Enter your name: ")
 	scanner := bufio.NewScanner(os.Stdin)
 	if scanner.Scan() {
@@ -68,17 +66,13 @@ func main() {
 	}
 	routingDiscovery := routingdiscovery.NewRoutingDiscovery(dhtNode)
 
-	
 	connectToBootstrapPeer(ctx, host, bootstrapAddr)
-
-	go handleIncomingMessages(host)
 
 	exit := make(chan os.Signal, 1)
 	signal.Notify(exit, syscall.SIGINT, syscall.SIGTERM)
 	for {
 		select {
 		case <-exit:
-			fmt.Println("\nExiting chat...")
 			return
 		default:
 			fmt.Print("> ")
@@ -165,10 +159,6 @@ func joinChatroom(name string) {
 	}
 	chatroom.CurrentUsers = append(chatroom.CurrentUsers, name)
 	fmt.Printf("Joining chatroom '%s'...\n", name)
-}
-
-func handleIncomingMessages(host host.Host) {
-	fmt.Println("Listening for incoming messages...")
 }
 
 func initDHT(ctx context.Context, host host.Host) *dht.IpfsDHT {
