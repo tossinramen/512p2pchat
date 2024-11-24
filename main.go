@@ -6,29 +6,23 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	routingdiscovery "github.com/libp2p/go-libp2p/p2p/discovery/routing"
+	"github.com/libp2p/go-libp2p/core/protocol"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/multiformats/go-multiaddr"
 )
 
 var (
-	name            string
-	rendezvous      = "p2p-chat-room"
-	activeChatrooms = make(map[string]*Chatroom)
+	name       string
+	rendezvous = "p2p-chat-room"
+	protocolID = protocol.ID("/p2p-chat/1.0.0")
 )
-
-type Chatroom struct {
-	Name         string
-	MaxUsers     int
-	CurrentUsers []string
-}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -45,6 +39,16 @@ func main() {
 		os.Exit(1)
 	}
 	defer host.Close()
+
+	host.SetStreamHandler(protocolID, func(stream network.Stream) {
+		buf := make([]byte, 1024)
+		n, err := stream.Read(buf)
+		if err != nil {
+			fmt.Printf("Error reading from stream: %v\n", err)
+			return
+		}
+		fmt.Printf("\n%s: %s\nYou: ", stream.Conn().RemotePeer(), string(buf[:n]))
+	})
 
 	fmt.Print("Enter your name: ")
 	scanner := bufio.NewScanner(os.Stdin)
@@ -64,101 +68,49 @@ func main() {
 		fmt.Println("Failed to initialize DHT.")
 		return
 	}
-	routingDiscovery := routingdiscovery.NewRoutingDiscovery(dhtNode)
 
 	connectToBootstrapPeer(ctx, host, bootstrapAddr)
 
-	exit := make(chan os.Signal, 1)
-	signal.Notify(exit, syscall.SIGINT, syscall.SIGTERM)
-	for {
-		select {
-		case <-exit:
-			return
-		default:
-			fmt.Print("> ")
+	go func() {
+		for {
+			fmt.Print("You: ")
 			if scanner.Scan() {
-				command := scanner.Text()
-				handleUserCommand(ctx, host, routingDiscovery, command)
+				message := scanner.Text()
+				if err := broadcastMessage(ctx, host, message); err != nil {
+					fmt.Printf("Error sending message: %v\n", err)
+				}
 			}
 		}
-	}
+	}()
+
+	exit := make(chan os.Signal, 1)
+	signal.Notify(exit, syscall.SIGINT, syscall.SIGTERM)
+	<-exit
+	fmt.Println("\nExiting chat...")
 }
 
 func connectToBootstrapPeer(ctx context.Context, host host.Host, bootstrapAddr string) {
+	fmt.Println("Attempting to connect to bootstrap address:", bootstrapAddr)
+
 	maddr, err := multiaddr.NewMultiaddr(bootstrapAddr)
 	if err != nil {
-		fmt.Println("Invalid multiaddress:", err)
-		os.Exit(1)
+		fmt.Printf("Invalid multiaddress format: %v\n", err)
+		return
 	}
 
 	peerInfo, err := peer.AddrInfoFromP2pAddr(maddr)
 	if err != nil {
-		fmt.Println("Error extracting peer info from multiaddress:", err)
-		os.Exit(1)
+		fmt.Printf("Error extracting peer info: %v\n", err)
+		return
 	}
 
-	// Connect to the bootstrap peer
 	err = host.Connect(ctx, *peerInfo)
 	if err != nil {
-		fmt.Println("Failed to connect to bootstrap peer:", err)
-		os.Exit(1)
-	}
-	fmt.Printf("Connected to bootstrap peer: %s\n", peerInfo.ID)
-}
-
-func handleUserCommand(ctx context.Context, host host.Host, routingDiscovery *routingdiscovery.RoutingDiscovery, command string) {
-	parts := strings.Fields(command)
-	if len(parts) < 2 {
-		fmt.Println("Invalid command. Please try again.")
+		fmt.Printf("Failed to connect to bootstrap peer at %s: %v\n", bootstrapAddr, err)
 		return
 	}
 
-	switch parts[0] {
-	case "create":
-		if len(parts) != 4 || parts[1] != "chatroom" {
-			fmt.Println("Usage: create chatroom [name] [number of participants allowed]")
-			return
-		}
-		chatroomName := parts[2]
-		maxUsers, err := strconv.Atoi(parts[3])
-		if err != nil || maxUsers < 1 {
-			fmt.Println("Invalid number of participants. Please enter a positive integer.")
-			return
-		}
-		createChatroom(chatroomName, maxUsers)
-	case "join":
-		if len(parts) != 3 || parts[1] != "chatroom" {
-			fmt.Println("Usage: join chatroom [name]")
-			return
-		}
-		chatroomName := parts[2]
-		joinChatroom(chatroomName)
-	default:
-		fmt.Println("Unknown command. Please try again.")
-	}
-}
-
-func createChatroom(name string, maxUsers int) {
-	if _, exists := activeChatrooms[name]; exists {
-		fmt.Printf("Chatroom '%s' already exists.\n", name)
-		return
-	}
-	activeChatrooms[name] = &Chatroom{Name: name, MaxUsers: maxUsers}
-	fmt.Printf("Chatroom '%s' created, allowing up to %d participants.\n", name, maxUsers)
-}
-
-func joinChatroom(name string) {
-	chatroom, exists := activeChatrooms[name]
-	if !exists {
-		fmt.Printf("Chatroom '%s' does not exist.\n", name)
-		return
-	}
-	if len(chatroom.CurrentUsers) >= chatroom.MaxUsers {
-		fmt.Printf("Chatroom '%s' is full.\n", name)
-		return
-	}
-	chatroom.CurrentUsers = append(chatroom.CurrentUsers, name)
-	fmt.Printf("Joining chatroom '%s'...\n", name)
+	fmt.Printf("Successfully connected to bootstrap peer: %s\n", peerInfo.ID)
 }
 
 func initDHT(ctx context.Context, host host.Host) *dht.IpfsDHT {
@@ -173,4 +125,23 @@ func initDHT(ctx context.Context, host host.Host) *dht.IpfsDHT {
 	}
 	fmt.Println("DHT initialized and bootstrapped.")
 	return dhtNode
+}
+
+func broadcastMessage(ctx context.Context, host host.Host, message string) error {
+	for _, peer := range host.Network().Peers() {
+		stream, err := host.NewStream(ctx, peer, protocolID)
+		if err != nil {
+			fmt.Printf("Error creating stream for peer %s: %v\n", peer, err)
+			continue
+		}
+		defer stream.Close()
+
+		_, err = stream.Write([]byte(message))
+		if err != nil {
+			fmt.Printf("Error writing to peer %s: %v\n", peer, err)
+			continue
+		}
+	}
+	fmt.Println("Message sent to all peers.")
+	return nil
 }

@@ -17,7 +17,7 @@ type OfflineMessage struct {
 	Timestamp time.Time
 }
 
-// Generate a unique hash for DHT keys
+
 func generateMessageHash(sender, content string, timestamp time.Time) string {
 	data := sender + content + timestamp.String()
 	hash := sha256.Sum256([]byte(data))
