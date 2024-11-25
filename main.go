@@ -28,55 +28,55 @@ var (
 	rendezvous = "p2p-chat-room"
 	protocolID = protocol.ID("/p2p-chat/1.0.0")
 )
-
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: p2p-chat [bootstrap-address]")
-		os.Exit(1)
-	}
-	bootstrapAddr := os.Args[1]
+    if len(os.Args) < 2 {
+        fmt.Println("Usage: p2p-chat [bootstrap-address]")
+        os.Exit(1)
+    }
+    bootstrapAddr := os.Args[1]
 
-	ctx, cancel := context.WithCancel(context.Background())
+    ctx, cancel := context.WithCancel(context.Background())
 
-	host, err := libp2p.New()
-	if err != nil {
-		fmt.Println("Error starting libp2p node:", err)
-		os.Exit(1)
-	}
-	defer host.Close()
+    host, err := libp2p.New()
+    if err != nil {
+        fmt.Println("Error starting libp2p node:", err)
+        os.Exit(1)
+    }
+    defer host.Close()
 
-	host.SetStreamHandler(protocolID, handleIncomingStream)
+    // Set stream handler
+    host.SetStreamHandler(protocolID, handleIncomingStream(host, ctx))
 
-	fmt.Print("Enter your name: ")
-	scanner := bufio.NewScanner(os.Stdin)
-	if scanner.Scan() {
-		name = strings.TrimSpace(scanner.Text())
-	}
-	if scanner.Err() != nil || len(name) < 2 || len(name) > 30 {
-		fmt.Println("Invalid name. Must be between 2 and 30 characters.")
-		return
-	}
+    fmt.Print("Enter your name: ")
+    scanner := bufio.NewScanner(os.Stdin)
+    if scanner.Scan() {
+        name = strings.TrimSpace(scanner.Text())
+    }
+    if scanner.Err() != nil || len(name) < 2 || len(name) > 30 {
+        fmt.Println("Invalid name. Must be between 2 and 30 characters.")
+        return
+    }
 
-	fmt.Println("Your Peer ID:", host.ID())
-	fmt.Println("Listening on:", host.Addrs())
+    fmt.Println("Your Peer ID:", host.ID())
+    fmt.Println("Listening on:", host.Addrs())
 
-	dhtNode := initDHT(ctx, host)
-	if dhtNode == nil {
-		fmt.Println("Failed to initialize DHT.")
-		return
-	}
+    dhtNode := initDHT(ctx, host)
+    if dhtNode == nil {
+        fmt.Println("Failed to initialize DHT.")
+        return
+    }
 
-	connectToBootstrapPeer(ctx, host, bootstrapAddr)
+    connectToBootstrapPeer(ctx, host, bootstrapAddr)
 
-	go handleUserInput(ctx, host, scanner)
+    go handleUserInput(ctx, host, scanner)
 
-	exit := make(chan os.Signal, 1)
-	signal.Notify(exit, syscall.SIGINT, syscall.SIGTERM)
-	<-exit
+    exit := make(chan os.Signal, 1)
+    signal.Notify(exit, syscall.SIGINT, syscall.SIGTERM)
+    <-exit
 
-	cancel()
+    cancel()
 
-	fmt.Println("\nExiting chat...")
+    fmt.Println("\nExiting chat...")
 }
 
 func connectToBootstrapPeer(ctx context.Context, host host.Host, bootstrapAddr string) {
@@ -118,17 +118,19 @@ func initDHT(ctx context.Context, host host.Host) *dht.IpfsDHT {
 }
 
 func broadcastMessage(ctx context.Context, host host.Host, message string) error {
-	for _, peer := range host.Network().Peers() {
-		stream, err := host.NewStream(ctx, peer, protocolID)
+	for _, peerID := range host.Network().Peers() {
+		// Open a stream to each connected peer
+		stream, err := host.NewStream(ctx, peerID, protocolID)
 		if err != nil {
-			fmt.Printf("Error creating stream for peer %s: %v\n", peer, err)
+			fmt.Printf("Error creating stream for peer %s: %v\n", peerID, err)
 			continue
 		}
 		defer stream.Close()
 
+		// Write the message to the stream
 		_, err = stream.Write([]byte(message))
 		if err != nil {
-			fmt.Printf("Error writing to peer %s: %v\n", peer, err)
+			fmt.Printf("Error writing to peer %s: %v\n", peerID, err)
 			continue
 		}
 	}
@@ -182,30 +184,49 @@ func handleUserInput(ctx context.Context, host host.Host, scanner *bufio.Scanner
 		}
 	}
 }
+func handleIncomingStream(host host.Host, ctx context.Context) network.StreamHandler {
+    return func(stream network.Stream) {
+        buf := make([]byte, 1024)
+        n, err := stream.Read(buf)
+        if err != nil {
+            fmt.Printf("Error reading from stream: %v\n", err)
+            return
+        }
+        message := string(buf[:n])
 
-func handleIncomingStream(stream network.Stream) {
-	buf := make([]byte, 1024)
-	n, err := stream.Read(buf)
-	if err != nil {
-		fmt.Printf("Error reading from stream: %v\n", err)
-		return
-	}
-	message := string(buf[:n])
+        
+        consoleMu.Lock()
+        fmt.Printf("\nMessage from %s: %s\n%s: ", stream.Conn().RemotePeer(), message, name)
+        consoleMu.Unlock()
 
-	consoleMu.Lock()
-	fmt.Printf("\nMessage from %s: %s\n%s: ", stream.Conn().RemotePeer(), message, name)
-	consoleMu.Unlock()
+       
+        relayMessage(ctx, host, stream.Conn().RemotePeer(), message)
+    }
+}
 
-	if strings.HasPrefix(message, "IMG:") {
-		base64Data := strings.TrimPrefix(message, "IMG:")
-		err := decodeBase64ToImage(base64Data, "received_image.jpg")
+func relayMessage(ctx context.Context, host host.Host, sender peer.ID, message string) {
+	for _, peerID := range host.Network().Peers() {
+		// Skip the original sender
+		if peerID == sender {
+			continue
+		}
+
+		// Relay the message
+		stream, err := host.NewStream(ctx, peerID, protocolID)
 		if err != nil {
-			fmt.Printf("Failed to decode image: %v\n", err)
-		} else {
-			fmt.Println("\nImage saved as received_image.jpg")
+			fmt.Printf("Error creating stream for peer %s: %v\n", peerID, err)
+			continue
+		}
+		defer stream.Close()
+
+		_, err = stream.Write([]byte(message))
+		if err != nil {
+			fmt.Printf("Error relaying message to peer %s: %v\n", peerID, err)
+			continue
 		}
 	}
 }
+
 
 func encodeImageToBase64(imagePath string) (string, error) {
 	file, err := os.Open(imagePath)
@@ -230,3 +251,4 @@ func decodeBase64ToImage(encodedString, outputPath string) error {
 
 	return ioutil.WriteFile(outputPath, data, 0644)
 }
+
