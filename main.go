@@ -3,12 +3,14 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"os/signal"
 	"strings"
-	"syscall"
 	"sync"
+	"syscall"
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -18,6 +20,7 @@ import (
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/multiformats/go-multiaddr"
 )
+
 var consoleMu sync.Mutex
 
 var (
@@ -42,19 +45,7 @@ func main() {
 	}
 	defer host.Close()
 
-	host.SetStreamHandler(protocolID, func(stream network.Stream) {
-		buf := make([]byte, 1024)
-		n, err := stream.Read(buf)
-		if err != nil {
-			fmt.Printf("Error reading from stream: %v\n", err)
-			return
-		}
-		message := string(buf[:n])
-
-		consoleMu.Lock()
-		fmt.Printf("\nMessage from %s: %s\n%s: ", stream.Conn().RemotePeer(), message, name)
-		consoleMu.Unlock()
-	})
+	host.SetStreamHandler(protocolID, handleIncomingStream)
 
 	fmt.Print("Enter your name: ")
 	scanner := bufio.NewScanner(os.Stdin)
@@ -79,17 +70,14 @@ func main() {
 
 	go handleUserInput(ctx, host, scanner)
 
-
 	exit := make(chan os.Signal, 1)
 	signal.Notify(exit, syscall.SIGINT, syscall.SIGTERM)
 	<-exit
-
 
 	cancel()
 
 	fmt.Println("\nExiting chat...")
 }
-
 
 func connectToBootstrapPeer(ctx context.Context, host host.Host, bootstrapAddr string) {
 	fmt.Println("Attempting to connect to bootstrap address:", bootstrapAddr)
@@ -144,7 +132,7 @@ func broadcastMessage(ctx context.Context, host host.Host, message string) error
 			continue
 		}
 	}
-	
+
 	return nil
 }
 
@@ -152,10 +140,8 @@ func handleUserInput(ctx context.Context, host host.Host, scanner *bufio.Scanner
 	for {
 		select {
 		case <-ctx.Done():
-			
 			return
 		default:
-			
 			consoleMu.Lock()
 			fmt.Printf("%s: ", name)
 			consoleMu.Unlock()
@@ -163,19 +149,84 @@ func handleUserInput(ctx context.Context, host host.Host, scanner *bufio.Scanner
 			if scanner.Scan() {
 				message := strings.TrimSpace(scanner.Text())
 				if message == "" {
-					continue 
+					continue
 				}
 
-				
-				formattedMessage := fmt.Sprintf("%s: %s", name, message)
-				if err := broadcastMessage(ctx, host, formattedMessage); err != nil {
-					consoleMu.Lock()
-					fmt.Printf("Error sending message: %v\n", err)
-					consoleMu.Unlock()
+				if strings.HasPrefix(message, "/sendimg") {
+					parts := strings.SplitN(message, " ", 2)
+					if len(parts) < 2 {
+						fmt.Println("Usage: /sendimg [image_path]")
+						continue
+					}
+
+					imagePath := parts[1]
+					base64Data, err := encodeImageToBase64(imagePath)
+					if err != nil {
+						fmt.Printf("Failed to encode image: %v\n", err)
+						continue
+					}
+
+					formattedMessage := "IMG:" + base64Data
+					if err := broadcastMessage(ctx, host, formattedMessage); err != nil {
+						fmt.Printf("Error sending image: %v\n", err)
+					}
+				} else {
+					formattedMessage := fmt.Sprintf("%s: %s", name, message)
+					if err := broadcastMessage(ctx, host, formattedMessage); err != nil {
+						fmt.Printf("Error sending message: %v\n", err)
+					}
 				}
 			} else {
 				return
 			}
 		}
 	}
+}
+
+func handleIncomingStream(stream network.Stream) {
+	buf := make([]byte, 1024)
+	n, err := stream.Read(buf)
+	if err != nil {
+		fmt.Printf("Error reading from stream: %v\n", err)
+		return
+	}
+	message := string(buf[:n])
+
+	consoleMu.Lock()
+	fmt.Printf("\nMessage from %s: %s\n%s: ", stream.Conn().RemotePeer(), message, name)
+	consoleMu.Unlock()
+
+	if strings.HasPrefix(message, "IMG:") {
+		base64Data := strings.TrimPrefix(message, "IMG:")
+		err := decodeBase64ToImage(base64Data, "received_image.jpg")
+		if err != nil {
+			fmt.Printf("Failed to decode image: %v\n", err)
+		} else {
+			fmt.Println("\nImage saved as received_image.jpg")
+		}
+	}
+}
+
+func encodeImageToBase64(imagePath string) (string, error) {
+	file, err := os.Open(imagePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open image: %w", err)
+	}
+	defer file.Close()
+
+	data, err := ioutil.ReadAll(file)
+	if err != nil {
+		return "", fmt.Errorf("failed to read image: %w", err)
+	}
+
+	return base64.StdEncoding.EncodeToString(data), nil
+}
+
+func decodeBase64ToImage(encodedString, outputPath string) error {
+	data, err := base64.StdEncoding.DecodeString(encodedString)
+	if err != nil {
+		return fmt.Errorf("failed to decode base64 string: %w", err)
+	}
+
+	return ioutil.WriteFile(outputPath, data, 0644)
 }
