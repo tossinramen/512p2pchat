@@ -146,7 +146,6 @@ func connectToBootstrapPeer(ctx context.Context, host host.Host, bootstrapAddr s
 	fmt.Printf("Successfully connected to bootstrap peer: %s\n", peerInfo.ID)
 }
 
-
 func handleIncomingMessages(ctx context.Context, sub *pubsub.Subscription, host host.Host) {
 	for {
 		msg, err := sub.Next(ctx)
@@ -156,17 +155,17 @@ func handleIncomingMessages(ctx context.Context, sub *pubsub.Subscription, host 
 		}
 
 		
-		if msg.ReceivedFrom == host.ID() { 
+		if msg.ReceivedFrom == host.ID() {
 			continue
 		}
 
 		
+		message := string(msg.Data)
 		consoleMu.Lock()
-		fmt.Printf("\n%s: %s\n%s: ", msg.ReceivedFrom.String(), string(msg.Data), name)
+		fmt.Printf("\r%s\n%s: ", message, name) 
 		consoleMu.Unlock()
 	}
 }
-
 
 
 
@@ -186,29 +185,10 @@ func handleUserInput(ctx context.Context, topic *pubsub.Topic, scanner *bufio.Sc
 					continue
 				}
 
-				if strings.HasPrefix(message, "/sendimg") {
-					parts := strings.SplitN(message, " ", 2)
-					if len(parts) < 2 {
-						fmt.Println("Usage: /sendimg [image_path]")
-						continue
-					}
-
-					imagePath := parts[1]
-					base64Data, err := encodeImageToBase64(imagePath)
-					if err != nil {
-						fmt.Printf("Failed to encode image: %v\n", err)
-						continue
-					}
-
-					formattedMessage := "IMG:" + base64Data
-					if err := topic.Publish(ctx, []byte(formattedMessage)); err != nil {
-						fmt.Printf("Error sending image: %v\n", err)
-					}
-				} else {
-					formattedMessage := fmt.Sprintf("%s: %s", name, message)
-					if err := topic.Publish(ctx, []byte(formattedMessage)); err != nil {
-						fmt.Printf("Error sending message: %v\n", err)
-					}
+				
+				formattedMessage := fmt.Sprintf("%s: %s", name, message)
+				if err := topic.Publish(ctx, []byte(formattedMessage)); err != nil {
+					fmt.Printf("Error sending message: %v\n", err)
 				}
 			} else {
 				return
