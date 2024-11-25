@@ -9,6 +9,8 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/discovery/routing"
 )
 
+
+
 func discoverPeers(ctx context.Context, routingDiscovery *routing.RoutingDiscovery, host host.Host, name string) {
 	peerChan, err := routingDiscovery.FindPeers(ctx, rendezvous)
 	if err != nil {
@@ -27,18 +29,17 @@ func discoverPeers(ctx context.Context, routingDiscovery *routing.RoutingDiscove
 				return
 			}
 
-			// Skip if peer is self
+			
 			if peer.ID == host.ID() {
 				continue
 			}
 
-			// Check if already connected
+			
 			if host.Network().Connectedness(peer.ID) == network.Connected {
 				fmt.Printf("Already connected to peer: %s\n", peer.ID)
 				continue
 			}
 
-			// Attempt to connect to the discovered peer
 			fmt.Printf("Discovered peer: %s\n", peer.ID)
 			err := host.Connect(ctx, peer)
 			if err != nil {

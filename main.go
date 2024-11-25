@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"sync"
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -17,6 +18,7 @@ import (
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/multiformats/go-multiaddr"
 )
+var consoleMu sync.Mutex
 
 var (
 	name       string
@@ -31,7 +33,7 @@ func main() {
 	}
 	bootstrapAddr := os.Args[1]
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
 
 	host, err := libp2p.New()
 	if err != nil {
@@ -47,7 +49,11 @@ func main() {
 			fmt.Printf("Error reading from stream: %v\n", err)
 			return
 		}
-		fmt.Printf("\n%s: %s\nYou: ", stream.Conn().RemotePeer(), string(buf[:n]))
+		message := string(buf[:n])
+
+		consoleMu.Lock()
+		fmt.Printf("\nMessage from %s: %s\n%s: ", stream.Conn().RemotePeer(), message, name)
+		consoleMu.Unlock()
 	})
 
 	fmt.Print("Enter your name: ")
@@ -71,23 +77,19 @@ func main() {
 
 	connectToBootstrapPeer(ctx, host, bootstrapAddr)
 
-	go func() {
-		for {
-			fmt.Print("You: ")
-			if scanner.Scan() {
-				message := scanner.Text()
-				if err := broadcastMessage(ctx, host, message); err != nil {
-					fmt.Printf("Error sending message: %v\n", err)
-				}
-			}
-		}
-	}()
+	go handleUserInput(ctx, host, scanner)
+
 
 	exit := make(chan os.Signal, 1)
 	signal.Notify(exit, syscall.SIGINT, syscall.SIGTERM)
 	<-exit
+
+
+	cancel()
+
 	fmt.Println("\nExiting chat...")
 }
+
 
 func connectToBootstrapPeer(ctx context.Context, host host.Host, bootstrapAddr string) {
 	fmt.Println("Attempting to connect to bootstrap address:", bootstrapAddr)
@@ -142,6 +144,38 @@ func broadcastMessage(ctx context.Context, host host.Host, message string) error
 			continue
 		}
 	}
-	fmt.Println("Message sent to all peers.")
+	
 	return nil
+}
+
+func handleUserInput(ctx context.Context, host host.Host, scanner *bufio.Scanner) {
+	for {
+		select {
+		case <-ctx.Done():
+			
+			return
+		default:
+			
+			consoleMu.Lock()
+			fmt.Printf("%s: ", name)
+			consoleMu.Unlock()
+
+			if scanner.Scan() {
+				message := strings.TrimSpace(scanner.Text())
+				if message == "" {
+					continue 
+				}
+
+				
+				formattedMessage := fmt.Sprintf("%s: %s", name, message)
+				if err := broadcastMessage(ctx, host, formattedMessage); err != nil {
+					consoleMu.Lock()
+					fmt.Printf("Error sending message: %v\n", err)
+					consoleMu.Unlock()
+				}
+			} else {
+				return
+			}
+		}
+	}
 }
